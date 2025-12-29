@@ -1,12 +1,7 @@
-# app_pwls.py
-# Procurement + Warehousing + Logistics System (PWLS)
-# Extends your procurement app with: Warehouses, Inventory, Stock Movements, Deliveries,
-# Vehicles/Drivers, Logistics KPIs, and automations (GRN -> Inventory, Delivery -> Deduct).
-# Uses your same DB and sidebar UI.
-
 import os
 import smtplib
 import hashlib
+import json
 from email.mime.text import MIMEText
 from datetime import datetime, date
 
@@ -17,37 +12,59 @@ from sqlalchemy import (
     ForeignKey, Boolean, Text, Enum, Numeric, select, func, and_, or_, text as sqltext
 )
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.dialects.mysql import JSON as MYSQL_JSON
 
 # ---------------------------
 # CONFIG / DB CONNECTION
 # ---------------------------
-st.set_page_config(page_title="PWLS — Procurement, Warehousing & Logistics", layout="wide")
-st.title("Procurement + Warehousing + Logistics System (PWLS)")
+st.set_page_config(page_title="WMS + Procurement", layout="wide")
 
-# Reuse your connection settings (edit if needed)
-DB_HOST = st.secrets.get("DB_HOST", os.getenv("DB_HOST", "127.0.0.1"))
-DB_PORT = int(st.secrets.get("DB_PORT", os.getenv("DB_PORT", "3306")))
-DB_USER = st.secrets.get("DB_USER", os.getenv("DB_USER", "root"))
-DB_PASS = st.secrets.get("DB_PASS", os.getenv("DB_PASS", ""))
-DB_SCHEMA = st.secrets.get("DB_SCHEMA", os.getenv("DB_SCHEMA", "procurement_db"))
+DB_HOST = st.secrets.get("DB_HOST", os.getenv("DB_HOST", "")).strip()
 
-CONN_STR = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_SCHEMA}"
+# If DB_HOST is provided -> MySQL, else -> SQLite (demo mode)
+USING_MYSQL = bool(DB_HOST)
+
+if USING_MYSQL:
+    DB_PORT = int(st.secrets.get("DB_PORT", os.getenv("DB_PORT", "3306")))
+    DB_USER = st.secrets.get("DB_USER", os.getenv("DB_USER", "")).strip()
+    DB_PASS = st.secrets.get("DB_PASS", os.getenv("DB_PASS", "")).strip()
+    DB_SCHEMA = st.secrets.get("DB_SCHEMA", os.getenv("DB_SCHEMA", "procurement_db")).strip()
+
+    if not (DB_USER and DB_PASS and DB_SCHEMA):
+        st.error("MySQL is selected (DB_HOST is set) but DB_USER/DB_PASS/DB_SCHEMA is missing.")
+        st.stop()
+
+    CONN_STR = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_SCHEMA}"
+else:
+    # SQLite file stored in the app directory (good for Streamlit Cloud demo)
+    CONN_STR = "sqlite:///pwls.db"
+
 engine = create_engine(CONN_STR, future=True)
-metadata = MetaData()
 
 # ---------------------------
-# EXISTING PROCUREMENT TABLES (same as earlier app)
+# SQLAlchemy Core metadata
+# ---------------------------
+metadata = MetaData()
+
+# JSON column compatibility:
+# - MySQL supports JSON type
+# - SQLite doesn't (we store JSON as Text)
+if USING_MYSQL:
+    from sqlalchemy.dialects.mysql import JSON as JSON_COL
+else:
+    JSON_COL = Text
+
+# ---------------------------
+# TABLES
 # ---------------------------
 users = Table("users", metadata,
     Column("id", Integer, primary_key=True),
     Column("name", String(120), nullable=False),
     Column("email", String(160), unique=True),
     Column("password_hash", String(128), nullable=False),
-    Column("role", Enum("requester","approver","buyer","inspector","finance","admin", name="role_enum"), nullable=False, default="requester"),
+    Column("role", Enum("requester","approver","buyer","inspector","finance","admin", name="role_enum"),
+           nullable=False, default="requester"),
     Column("dept", String(80)),
     Column("created_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
 suppliers = Table("suppliers", metadata,
@@ -59,7 +76,6 @@ suppliers = Table("suppliers", metadata,
     Column("status", Enum("active","inactive", name="supplier_status"), default="active"),
     Column("rating", Numeric(5,2), default=0),
     Column("created_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
 items = Table("items", metadata,
@@ -69,7 +85,6 @@ items = Table("items", metadata,
     Column("uom", String(20), default="ea"),
     Column("last_price", Numeric(12,2), default=0),
     Column("created_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
 requisitions = Table("requisitions", metadata,
@@ -78,9 +93,9 @@ requisitions = Table("requisitions", metadata,
     Column("requester_id", Integer, ForeignKey("users.id")),
     Column("needed_by", Date),
     Column("purpose", String(255)),
-    Column("status", Enum("draft","pending_approval","approved","rejected","sourced","ordered","delivered","closed", name="req_status"), default="draft"),
+    Column("status", Enum("draft","pending_approval","approved","rejected","sourced","ordered","delivered","closed",
+                         name="req_status"), default="draft"),
     Column("created_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
 requisition_items = Table("requisition_items", metadata,
@@ -90,7 +105,6 @@ requisition_items = Table("requisition_items", metadata,
     Column("description", String(255)),
     Column("qty", Numeric(12,2), nullable=False),
     Column("target_price", Numeric(12,2)),
-    mysql_charset="utf8mb4"
 )
 
 approvals = Table("approvals", metadata,
@@ -100,7 +114,6 @@ approvals = Table("approvals", metadata,
     Column("decision", Enum("pending","approved","rejected", name="decision_enum"), default="pending"),
     Column("comments", String(255)),
     Column("decided_at", DateTime, nullable=True),
-    mysql_charset="utf8mb4"
 )
 
 rfqs = Table("rfqs", metadata,
@@ -109,7 +122,6 @@ rfqs = Table("rfqs", metadata,
     Column("rfq_no", String(30), unique=True),
     Column("status", Enum("draft","sent","closed", name="rfq_status"), default="draft"),
     Column("created_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
 rfq_items = Table("rfq_items", metadata,
@@ -117,7 +129,6 @@ rfq_items = Table("rfq_items", metadata,
     Column("rfq_id", Integer, ForeignKey("rfqs.id", ondelete="CASCADE")),
     Column("item_desc", String(255)),
     Column("qty", Numeric(12,2), nullable=False),
-    mysql_charset="utf8mb4"
 )
 
 bids = Table("bids", metadata,
@@ -127,7 +138,6 @@ bids = Table("bids", metadata,
     Column("price", Numeric(12,2), nullable=False),
     Column("lead_time_days", Integer, default=0),
     Column("notes", String(255)),
-    mysql_charset="utf8mb4"
 )
 
 purchase_orders = Table("purchase_orders", metadata,
@@ -135,9 +145,9 @@ purchase_orders = Table("purchase_orders", metadata,
     Column("po_no", String(30), unique=True),
     Column("supplier_id", Integer, ForeignKey("suppliers.id")),
     Column("rfq_id", Integer, ForeignKey("rfqs.id")),
-    Column("status", Enum("created","acknowledged","partially_delivered","delivered","closed", name="po_status"), default="created"),
+    Column("status", Enum("created","acknowledged","partially_delivered","delivered","closed", name="po_status"),
+           default="created"),
     Column("created_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
 po_items = Table("po_items", metadata,
@@ -146,7 +156,6 @@ po_items = Table("po_items", metadata,
     Column("item_desc", String(255)),
     Column("qty", Numeric(12,2), nullable=False),
     Column("unit_price", Numeric(12,2), nullable=False),
-    mysql_charset="utf8mb4"
 )
 
 goods_receipts = Table("goods_receipts", metadata,
@@ -155,7 +164,6 @@ goods_receipts = Table("goods_receipts", metadata,
     Column("grn_no", String(30), unique=True),
     Column("received_at", Date),
     Column("received_by", Integer, ForeignKey("users.id")),
-    mysql_charset="utf8mb4"
 )
 
 inspections = Table("inspections", metadata,
@@ -165,7 +173,6 @@ inspections = Table("inspections", metadata,
     Column("notes", String(255)),
     Column("inspected_by", Integer, ForeignKey("users.id")),
     Column("inspected_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
 invoices = Table("invoices", metadata,
@@ -176,7 +183,6 @@ invoices = Table("invoices", metadata,
     Column("amount", Numeric(12,2)),
     Column("status", Enum("received","matched","paid","rejected", name="inv_status"), default="received"),
     Column("received_at", Date),
-    mysql_charset="utf8mb4"
 )
 
 invoice_items = Table("invoice_items", metadata,
@@ -185,7 +191,6 @@ invoice_items = Table("invoice_items", metadata,
     Column("item_desc", String(255)),
     Column("qty", Numeric(12,2), nullable=False),
     Column("unit_price", Numeric(12,2), nullable=False),
-    mysql_charset="utf8mb4"
 )
 
 payments = Table("payments", metadata,
@@ -194,7 +199,6 @@ payments = Table("payments", metadata,
     Column("paid_at", Date),
     Column("method", String(40)),
     Column("reference", String(80)),
-    mysql_charset="utf8mb4"
 )
 
 documents = Table("documents", metadata,
@@ -204,7 +208,6 @@ documents = Table("documents", metadata,
     Column("filename", String(160)),
     Column("path", String(255)),
     Column("uploaded_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
 supplier_scores = Table("supplier_scores", metadata,
@@ -216,7 +219,6 @@ supplier_scores = Table("supplier_scores", metadata,
     Column("service", Integer),
     Column("overall", Numeric(5,2)),
     Column("notes", String(255)),
-    mysql_charset="utf8mb4"
 )
 
 audit_logs = Table("audit_logs", metadata,
@@ -225,13 +227,12 @@ audit_logs = Table("audit_logs", metadata,
     Column("action", String(80)),
     Column("entity_type", String(30)),
     Column("entity_id", Integer),
-    Column("details", MYSQL_JSON),
+    Column("details", JSON_COL),
     Column("created_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
 # ---------------------------
-# NEW WAREHOUSING & LOGISTICS TABLES
+# WAREHOUSING & LOGISTICS TABLES
 # ---------------------------
 warehouses = Table("warehouses", metadata,
     Column("id", Integer, primary_key=True),
@@ -239,15 +240,13 @@ warehouses = Table("warehouses", metadata,
     Column("code", String(40), unique=True),
     Column("address", String(255)),
     Column("created_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
 bin_locations = Table("bin_locations", metadata,
     Column("id", Integer, primary_key=True),
     Column("warehouse_id", Integer, ForeignKey("warehouses.id", ondelete="CASCADE")),
-    Column("code", String(60), nullable=False),  # e.g., A-01-03
+    Column("code", String(60), nullable=False),
     Column("desc", String(160)),
-    mysql_charset="utf8mb4"
 )
 
 inventory = Table("inventory", metadata,
@@ -257,7 +256,6 @@ inventory = Table("inventory", metadata,
     Column("bin_id", Integer, ForeignKey("bin_locations.id"), nullable=True),
     Column("qty", Numeric(14,3), default=0),
     Column("updated_at", DateTime, default=datetime.utcnow, onupdate=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
 stock_movements = Table("stock_movements", metadata,
@@ -270,13 +268,11 @@ stock_movements = Table("stock_movements", metadata,
     Column("bin_id", Integer, ForeignKey("bin_locations.id"), nullable=True),
     Column("qty", Numeric(14,3)),
     Column("reason", String(160)),
-    Column("ref_entity", String(30)),   # e.g., GRN, DO
+    Column("ref_entity", String(30)),
     Column("ref_id", Integer),
     Column("created_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
-# Outbound (simple sales/dispatch abstraction)
 deliveries = Table("deliveries", metadata,
     Column("id", Integer, primary_key=True),
     Column("do_no", String(30), unique=True),
@@ -285,7 +281,6 @@ deliveries = Table("deliveries", metadata,
     Column("status", Enum("created","picked","shipped","delivered", name="delivery_status"), default="created"),
     Column("scheduled_date", Date),
     Column("created_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
 delivery_items = Table("delivery_items", metadata,
@@ -294,16 +289,13 @@ delivery_items = Table("delivery_items", metadata,
     Column("item_id", Integer, ForeignKey("items.id")),
     Column("bin_id", Integer, ForeignKey("bin_locations.id"), nullable=True),
     Column("qty", Numeric(14,3)),
-    mysql_charset="utf8mb4"
 )
 
-# Fleet & routing basics
 vehicles = Table("vehicles", metadata,
     Column("id", Integer, primary_key=True),
     Column("plate_no", String(40), unique=True),
     Column("capacity_kg", Numeric(12,3)),
     Column("active", Boolean, default=True),
-    mysql_charset="utf8mb4"
 )
 
 drivers = Table("drivers", metadata,
@@ -311,7 +303,6 @@ drivers = Table("drivers", metadata,
     Column("name", String(120)),
     Column("phone", String(60)),
     Column("active", Boolean, default=True),
-    mysql_charset="utf8mb4"
 )
 
 delivery_assignments = Table("delivery_assignments", metadata,
@@ -320,10 +311,27 @@ delivery_assignments = Table("delivery_assignments", metadata,
     Column("vehicle_id", Integer, ForeignKey("vehicles.id")),
     Column("driver_id", Integer, ForeignKey("drivers.id")),
     Column("assigned_at", DateTime, default=datetime.utcnow),
-    mysql_charset="utf8mb4"
 )
 
-metadata.create_all(engine)
+# ---------------------------
+# Initialize DB schema safely
+# ---------------------------
+def init_db():
+    try:
+        metadata.create_all(engine)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+ok, err = init_db()
+if not ok:
+    st.error("Database initialization failed.")
+    st.code(err)
+    st.info(
+        "If deploying on Streamlit Cloud without MySQL, leave Secrets empty to use SQLite. "
+        "If using MySQL, set DB_HOST/DB_USER/DB_PASS/DB_SCHEMA in Streamlit Secrets to a hosted DB (not 127.0.0.1)."
+    )
+    st.stop()
 
 # ---------------------------
 # HELPERS
@@ -335,13 +343,17 @@ def now_ts_id(prefix: str) -> str:
     return datetime.now().strftime(f"{prefix}%Y%m%d%H%M%S")
 
 def log(actor, action, entity_type, entity_id, details=None):
+    # store details as JSON string if not MySQL JSON
+    payload = details or {}
+    if not USING_MYSQL:
+        payload = json.dumps(payload, ensure_ascii=False)
     with engine.begin() as conn:
         conn.execute(audit_logs.insert().values(
             actor=actor, action=action, entity_type=entity_type,
-            entity_id=entity_id, details=details or {}
+            entity_id=entity_id, details=payload
         ))
 
-# Email (optional)
+# Email (optional) - from environment only (safe for Cloud)
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
@@ -371,12 +383,17 @@ def require_role(roles: list[str]) -> bool:
 # Inventory utilities
 def get_or_create_inv(conn, warehouse_id: int, item_id: int, bin_id: int|None = None):
     row = conn.execute(select(inventory).where(
-        and_(inventory.c.warehouse_id==warehouse_id, inventory.c.item_id==item_id, inventory.c.bin_id.is_(bin_id))
+        and_(inventory.c.warehouse_id==warehouse_id,
+             inventory.c.item_id==item_id,
+             inventory.c.bin_id.is_(bin_id))
     )).mappings().first()
-    if row: return row
+    if row:
+        return row
     conn.execute(inventory.insert().values(warehouse_id=warehouse_id, item_id=item_id, bin_id=bin_id, qty=0))
     return conn.execute(select(inventory).where(
-        and_(inventory.c.warehouse_id==warehouse_id, inventory.c.item_id==item_id, inventory.c.bin_id.is_(bin_id))
+        and_(inventory.c.warehouse_id==warehouse_id,
+             inventory.c.item_id==item_id,
+             inventory.c.bin_id.is_(bin_id))
     )).mappings().first()
 
 def inventory_in(conn, warehouse_id: int, item_id: int, qty: float, ref_entity: str, ref_id: int, bin_id: int|None=None):
@@ -402,7 +419,6 @@ def inventory_out(conn, warehouse_id: int, item_id: int, qty: float, ref_entity:
     ))
 
 def transfer_stock(conn, wh_from: int, wh_to: int, item_id: int, qty: float, reason="TRANSFER"):
-    # OUT from source, IN to target
     inventory_out(conn, wh_from, item_id, qty, "TRANSFER", 0)
     inventory_in(conn, wh_to, item_id, qty, "TRANSFER", 0)
     conn.execute(stock_movements.insert().values(
@@ -419,6 +435,7 @@ if "user" not in st.session_state:
 
 with st.sidebar:
     st.subheader("Account")
+
     if st.session_state.user:
         st.success(f"Signed in as {st.session_state.user['name']} ({st.session_state.user['role']})")
         if st.button("Sign out"):
@@ -483,9 +500,8 @@ nav = [x for x in nav_all if x]
 choice = st.sidebar.radio("Navigate", nav, index=0)
 
 # ---------------------------------
-# PAGES (Procurement 1–7) — same as before, shortened comments
+# PAGES
 # ---------------------------------
-
 def page_requisitions():
     st.header("Requisitions")
     col1, col2 = st.columns(2)
@@ -497,7 +513,8 @@ def page_requisitions():
             req_no = now_ts_id("REQ")
             with engine.begin() as conn:
                 rid = conn.execute(requisitions.insert().values(
-                    req_no=req_no, requester_id=requester_id, needed_by=needed_by, purpose=purpose, status="pending_approval"
+                    req_no=req_no, requester_id=requester_id, needed_by=needed_by,
+                    purpose=purpose, status="pending_approval"
                 )).inserted_primary_key[0]
             log(st.session_state.user["email"], "CREATE", "REQ", rid, {"req_no": req_no})
             st.success(f"Requisition {req_no} created (ID {rid})")
@@ -564,7 +581,8 @@ def page_rfqs_bids():
         if st.button("Record Bid"):
             with engine.begin() as conn:
                 conn.execute(bids.insert().values(
-                    rfq_id=int(rfq_id_for_bid), supplier_id=int(supplier_id), price=price, lead_time_days=int(ltd), notes=notes
+                    rfq_id=int(rfq_id_for_bid), supplier_id=int(supplier_id),
+                    price=price, lead_time_days=int(ltd), notes=notes
                 ))
             st.success("Bid recorded")
     with engine.begin() as conn:
@@ -590,7 +608,10 @@ def page_pos():
                 po_no=po_no, supplier_id=int(supplier_id_sel), rfq_id=int(rfq_id_sel), status="created"
             )).inserted_primary_key[0]
             items_rows = conn.execute(select(rfq_items).where(rfq_items.c.rfq_id==int(rfq_id_sel))).mappings().all()
-            bid = conn.execute(select(bids.c.price).where(and_(bids.c.rfq_id==int(rfq_id_sel), bids.c.supplier_id==int(supplier_id_sel))).order_by(bids.c.id.desc())).scalar()
+            bid = conn.execute(
+                select(bids.c.price).where(and_(bids.c.rfq_id==int(rfq_id_sel), bids.c.supplier_id==int(supplier_id_sel)))
+                .order_by(bids.c.id.desc())
+            ).scalar()
             total_qty = sum([float(r["qty"]) for r in items_rows]) or 1.0
             unit_price = float(bid)/total_qty if bid is not None else 0
             for r in items_rows:
@@ -607,34 +628,34 @@ def page_pos():
 
 def page_grn_insp():
     st.header("Goods Receipt & Inspection (Auto-Inventory IN)")
-    # Choose warehouse to receive into
     with engine.begin() as conn:
         wh_opts = pd.read_sql_query(sqltext("SELECT id, name FROM warehouses ORDER BY name"), conn)
     if wh_opts.empty:
         st.warning("Create a warehouse first (see '8) Warehouses').")
-    wh_id = st.selectbox("Warehouse to receive into", wh_opts["id"].tolist() if not wh_opts.empty else [0],
-                         format_func=lambda x: wh_opts.set_index("id").loc[x, "name"] if not wh_opts.empty else str(x))
+        wh_id = 0
+    else:
+        wh_id = st.selectbox("Warehouse to receive into", wh_opts["id"].tolist(),
+                             format_func=lambda x: wh_opts.set_index("id").loc[x, "name"])
 
     col1, col2 = st.columns(2)
     with col1:
         po_id_in = st.number_input("PO ID", min_value=1, step=1)
         received_by = st.number_input("Receiver user ID", min_value=1, step=1, value=st.session_state.user["id"])
         if st.button("Record Goods Receipt"):
+            if wh_id == 0:
+                st.error("Please create/select a warehouse first.")
+                return
             with engine.begin() as conn:
                 grn_no = now_ts_id("GRN")
                 grn_id = conn.execute(goods_receipts.insert().values(
                     po_id=int(po_id_in), grn_no=grn_no, received_at=date.today(), received_by=int(received_by)
                 )).inserted_primary_key[0]
                 conn.execute(purchase_orders.update().where(purchase_orders.c.id==int(po_id_in)).values(status="delivered"))
-                # 🔄 Auto-inventory IN: split by PO items; map descriptions to items.name when possible
                 po_lines = conn.execute(select(po_items).where(po_items.c.po_id==int(po_id_in))).mappings().all()
-                # naive item mapping by name -> items table, else create a generic item?
                 for line in po_lines:
-                    # Try match by name
                     item_name = str(line["item_desc"]).strip()
                     it = conn.execute(select(items).where(items.c.name==item_name)).mappings().first()
                     if not it:
-                        # create item master quickly (optional)
                         iid = conn.execute(items.insert().values(name=item_name, uom="ea", last_price=line["unit_price"])).inserted_primary_key[0]
                         item_id = iid
                     else:
@@ -642,14 +663,18 @@ def page_grn_insp():
                         conn.execute(items.update().where(items.c.id==item_id).values(last_price=line["unit_price"]))
                     inventory_in(conn, int(wh_id), int(item_id), float(line["qty"]), "GRN", int(grn_id))
             st.success(f"GRN {grn_no} recorded (ID {grn_id}) — Inventory updated ✅")
+
     with col2:
         grn_id_in = st.number_input("GRN ID", min_value=1, step=1)
         result = st.selectbox("Inspection Result", ["accepted","rejected","accepted_with_notes"])
         notes = st.text_input("Inspection notes")
         if st.button("Save Inspection"):
             with engine.begin() as conn:
-                conn.execute(inspections.insert().values(grn_id=int(grn_id_in), result=result, notes=notes, inspected_by=st.session_state.user["id"]))
+                conn.execute(inspections.insert().values(
+                    grn_id=int(grn_id_in), result=result, notes=notes, inspected_by=st.session_state.user["id"]
+                ))
             st.success("Inspection saved")
+
     with engine.begin() as conn:
         df = pd.read_sql_query(sqltext("SELECT id, grn_no, po_id, received_at FROM goods_receipts ORDER BY id DESC LIMIT 200"), conn)
     st.subheader("Recent GRNs")
@@ -669,6 +694,7 @@ def page_invoices():
             inv_line_desc = st.text_input("Item desc")
             inv_line_qty = st.number_input("Qty", min_value=0.0, step=1.0)
             inv_line_unit = st.number_input("Unit price", min_value=0.0, step=0.01)
+
         if st.button("Save Invoice Header"):
             with engine.begin() as conn:
                 inv_id = conn.execute(invoices.insert().values(
@@ -677,6 +703,7 @@ def page_invoices():
                 )).inserted_primary_key[0]
             st.session_state["current_invoice_id"] = inv_id
             st.success(f"Invoice {invoice_no} saved (ID {inv_id})")
+
         if st.button("Add Invoice Line"):
             inv_id = st.session_state.get("current_invoice_id")
             if not inv_id:
@@ -687,6 +714,7 @@ def page_invoices():
                         invoice_id=int(inv_id), item_desc=inv_line_desc, qty=inv_line_qty, unit_price=inv_line_unit
                     ))
                 st.success("Invoice line added")
+
     with st.expander("Mark Payment"):
         inv_id_pay = st.number_input("Invoice ID", min_value=1, step=1)
         method = st.text_input("Method", value="bank_transfer")
@@ -696,6 +724,7 @@ def page_invoices():
                 conn.execute(invoices.update().where(invoices.c.id==int(inv_id_pay)).values(status="paid"))
                 conn.execute(payments.insert().values(invoice_id=int(inv_id_pay), paid_at=date.today(), method=method, reference=ref))
             st.success("Payment recorded")
+
     st.subheader("Three-way Match Checker")
     inv_id_chk = st.number_input("Invoice ID to validate", min_value=1, step=1)
     if st.button("Run 3-way match"):
@@ -703,19 +732,21 @@ def page_invoices():
             inv = conn.execute(select(invoices).where(invoices.c.id==int(inv_id_chk))).mappings().first()
             if not inv:
                 st.error("Invoice not found")
-            else:
-                po_id = inv["po_id"]
-                po_lines = conn.execute(select(po_items).where(po_items.c.po_id==po_id)).mappings().all()
-                po_qty = sum([float(r["qty"]) for r in po_lines])
-                po_total = sum([float(r["qty"])*float(r["unit_price"]) for r in po_lines])
-                grn_rows = conn.execute(select(goods_receipts).where(goods_receipts.c.po_id==po_id)).mappings().all()
-                inv_lines = conn.execute(select(invoice_items).where(invoice_items.c.invoice_id==inv_id_chk)).mappings().all()
-                inv_qty = sum([float(r["qty"]) for r in inv_lines])
-                inv_total = sum([float(r["qty"])*float(r["unit_price"]) for r in inv_lines])
+                return
+            po_id = inv["po_id"]
+            po_lines = conn.execute(select(po_items).where(po_items.c.po_id==po_id)).mappings().all()
+            po_qty = sum([float(r["qty"]) for r in po_lines])
+            po_total = sum([float(r["qty"])*float(r["unit_price"]) for r in po_lines])
+            grn_rows = conn.execute(select(goods_receipts).where(goods_receipts.c.po_id==po_id)).mappings().all()
+            inv_lines = conn.execute(select(invoice_items).where(invoice_items.c.invoice_id==inv_id_chk)).mappings().all()
+            inv_qty = sum([float(r["qty"]) for r in inv_lines])
+            inv_total = sum([float(r["qty"])*float(r["unit_price"]) for r in inv_lines])
+
         match_qty = "OK" if abs(inv_qty - po_qty) < 1e-6 else "MISMATCH"
         match_amt = "OK" if abs(inv_total - po_total) < 1e-2 else "MISMATCH"
         st.write(f"PO Qty: **{po_qty}** | Invoice Qty: **{inv_qty}** → {match_qty}")
         st.write(f"PO Amount: **{po_total:.2f}** | Invoice Amount (lines): **{inv_total:.2f}** → {match_amt}")
+
         if not grn_rows:
             st.warning("No GRN found — goods not received")
         if match_qty == "OK" and match_amt == "OK" and grn_rows:
@@ -724,6 +755,7 @@ def page_invoices():
             st.success("Invoice marked as MATCHED ✅")
         else:
             st.error("Three-way match failed ❌")
+
     with engine.begin() as conn:
         df = pd.read_sql_query(sqltext("SELECT id, invoice_no, po_id, amount, status FROM invoices ORDER BY id DESC LIMIT 200"), conn)
     st.subheader("Invoices")
@@ -741,9 +773,11 @@ def page_suppliers():
         with engine.begin() as conn:
             sid = conn.execute(suppliers.insert().values(name=name, contact=contact, email=email, phone=phone)).inserted_primary_key[0]
         st.success(f"Supplier added (ID {sid})")
+
     with engine.begin() as conn:
         df = pd.read_sql_query(sqltext("SELECT id, name, status, rating FROM suppliers ORDER BY id DESC LIMIT 200"), conn)
     st.dataframe(df, use_container_width=True)
+
     st.subheader("Performance Scoring")
     supplier_id_s = st.number_input("Supplier ID", min_value=1, step=1)
     quality = st.slider("Quality", 0, 10, 8)
@@ -760,7 +794,6 @@ def page_suppliers():
             conn.execute(suppliers.update().where(suppliers.c.id==int(supplier_id_s)).values(rating=overall))
         st.success("Score saved")
 
-# 8) Warehouses
 def page_warehouses():
     st.header("Warehouses")
     with st.form("add_wh", clear_on_submit=True):
@@ -772,6 +805,7 @@ def page_warehouses():
         with engine.begin() as conn:
             wid = conn.execute(warehouses.insert().values(name=name, code=code, address=address)).inserted_primary_key[0]
         st.success(f"Warehouse created (ID {wid})")
+
     st.subheader("All Warehouses")
     with engine.begin() as conn:
         df = pd.read_sql_query(sqltext("SELECT id, name, code, address, created_at FROM warehouses ORDER BY id DESC"), conn)
@@ -785,6 +819,7 @@ def page_warehouses():
         with engine.begin() as conn:
             conn.execute(bin_locations.insert().values(warehouse_id=int(wh_id), code=bin_code, desc=bin_desc))
         st.success("Bin added")
+
     with engine.begin() as conn:
         bins = pd.read_sql_query(sqltext("""
             SELECT b.id, w.name AS warehouse, b.code, b.desc
@@ -793,7 +828,6 @@ def page_warehouses():
         """), conn)
     st.dataframe(bins, use_container_width=True)
 
-# 9) Inventory & Transfers
 def page_inventory():
     st.header("Inventory & Transfers")
     with engine.begin() as conn:
@@ -812,12 +846,15 @@ def page_inventory():
     with engine.begin() as conn:
         whs = pd.read_sql_query(sqltext("SELECT id, name FROM warehouses ORDER BY name"), conn)
         its = pd.read_sql_query(sqltext("SELECT id, name FROM items ORDER BY name LIMIT 1000"), conn)
-    wh_from = col1.selectbox("From Warehouse", whs["id"].tolist() if not whs.empty else [0],
-                             format_func=lambda x: whs.set_index("id").loc[x,"name"] if not whs.empty else str(x))
-    wh_to = col2.selectbox("To Warehouse", whs["id"].tolist() if not whs.empty else [0],
-                           format_func=lambda x: whs.set_index("id").loc[x,"name"] if not whs.empty else str(x))
-    item_sel = col3.selectbox("Item", its["id"].tolist() if not its.empty else [0],
-                              format_func=lambda x: its.set_index("id").loc[x,"name"] if not its.empty else str(x))
+
+    if whs.empty or its.empty:
+        st.info("Create at least one warehouse and one item (items get created during GRN) to use transfers.")
+        return
+
+    wh_from = col1.selectbox("From Warehouse", whs["id"].tolist(), format_func=lambda x: whs.set_index("id").loc[x,"name"])
+    wh_to = col2.selectbox("To Warehouse", whs["id"].tolist(), format_func=lambda x: whs.set_index("id").loc[x,"name"])
+    item_sel = col3.selectbox("Item", its["id"].tolist(), format_func=lambda x: its.set_index("id").loc[x,"name"])
+
     qty = st.number_input("Qty to transfer", min_value=0.0, step=1.0)
     if st.button("Transfer"):
         try:
@@ -840,21 +877,26 @@ def page_inventory():
         """), conn)
     st.dataframe(mv, use_container_width=True)
 
-# 10) Outbound Deliveries (auto OUT)
 def page_deliveries():
     st.header("Outbound Deliveries (Auto-Inventory OUT)")
     with engine.begin() as conn:
         whs = pd.read_sql_query(sqltext("SELECT id, name FROM warehouses ORDER BY name"), conn)
         its = pd.read_sql_query(sqltext("SELECT id, name FROM items ORDER BY name LIMIT 1000"), conn)
-    wh_id = st.selectbox("Warehouse", whs["id"].tolist() if not whs.empty else [0],
-                         format_func=lambda x: whs.set_index("id").loc[x,"name"] if not whs.empty else str(x))
+
+    if whs.empty:
+        st.warning("Create a warehouse first.")
+        return
+
+    wh_id = st.selectbox("Warehouse", whs["id"].tolist(), format_func=lambda x: whs.set_index("id").loc[x,"name"])
     customer = st.text_input("Customer name")
     sched = st.date_input("Scheduled date", date.today())
+
     if st.button("Create Delivery Order"):
         with engine.begin() as conn:
             do_no = now_ts_id("DO")
             did = conn.execute(deliveries.insert().values(
-                do_no=do_no, warehouse_id=int(wh_id), customer_name=customer, status="created", scheduled_date=sched
+                do_no=do_no, warehouse_id=int(wh_id), customer_name=customer,
+                status="created", scheduled_date=sched
             )).inserted_primary_key[0]
         st.session_state["current_do"] = did
         st.success(f"Delivery created {do_no} (ID {did})")
@@ -862,23 +904,27 @@ def page_deliveries():
     st.subheader("Add Delivery Lines")
     do_cur = st.session_state.get("current_do")
     if do_cur:
-        item_sel = st.selectbox("Item", its["id"].tolist() if not its.empty else [0],
-                                format_func=lambda x: its.set_index("id").loc[x,"name"] if not its.empty else str(x))
-        qty = st.number_input("Qty to ship", min_value=0.0, step=1.0)
-        if st.button("Add Line"):
-            with engine.begin() as conn:
-                conn.execute(delivery_items.insert().values(delivery_id=int(do_cur), item_id=int(item_sel), qty=float(qty)))
-            st.success("Line added")
-        if st.button("Ship (auto deduct inventory)"):
-            try:
+        if its.empty:
+            st.info("No items exist yet. Create items via GRN first.")
+        else:
+            item_sel = st.selectbox("Item", its["id"].tolist(), format_func=lambda x: its.set_index("id").loc[x,"name"])
+            qty = st.number_input("Qty to ship", min_value=0.0, step=1.0)
+            if st.button("Add Line"):
                 with engine.begin() as conn:
-                    lines = conn.execute(select(delivery_items).where(delivery_items.c.delivery_id==int(do_cur))).mappings().all()
-                    for ln in lines:
-                        inventory_out(conn, int(wh_id), int(ln["item_id"]), float(ln["qty"]), "DO", int(do_cur))
-                    conn.execute(deliveries.update().where(deliveries.c.id==int(do_cur)).values(status="shipped"))
-                st.success("Delivery shipped — Inventory deducted ✅")
-            except Exception as e:
-                st.error(str(e))
+                    conn.execute(delivery_items.insert().values(delivery_id=int(do_cur), item_id=int(item_sel), qty=float(qty)))
+                st.success("Line added")
+
+            if st.button("Ship (auto deduct inventory)"):
+                try:
+                    with engine.begin() as conn:
+                        lines = conn.execute(select(delivery_items).where(delivery_items.c.delivery_id==int(do_cur))).mappings().all()
+                        for ln in lines:
+                            inventory_out(conn, int(wh_id), int(ln["item_id"]), float(ln["qty"]), "DO", int(do_cur))
+                        conn.execute(deliveries.update().where(deliveries.c.id==int(do_cur)).values(status="shipped"))
+                    st.success("Delivery shipped — Inventory deducted ✅")
+                except Exception as e:
+                    st.error(str(e))
+
     with engine.begin() as conn:
         d_head = pd.read_sql_query(sqltext("""
             SELECT d.id, d.do_no, w.name warehouse, d.customer_name, d.status, d.scheduled_date, d.created_at
@@ -888,7 +934,6 @@ def page_deliveries():
     st.subheader("Recent Deliveries")
     st.dataframe(d_head, use_container_width=True)
 
-# 11) Vehicles & Drivers
 def page_fleet():
     st.header("Vehicles & Drivers")
     col1, col2 = st.columns(2)
@@ -908,6 +953,7 @@ def page_fleet():
             with engine.begin() as conn:
                 conn.execute(drivers.insert().values(name=dname, phone=dphone, active=True))
             st.success("Driver added")
+
     with engine.begin() as conn:
         v = pd.read_sql_query(sqltext("SELECT id, plate_no, capacity_kg, active FROM vehicles ORDER BY id DESC"), conn)
         d = pd.read_sql_query(sqltext("SELECT id, name, phone, active FROM drivers ORDER BY id DESC"), conn)
@@ -921,44 +967,53 @@ def page_fleet():
         dels = pd.read_sql_query(sqltext("SELECT id, do_no FROM deliveries ORDER BY id DESC LIMIT 300"), conn)
         vs = pd.read_sql_query(sqltext("SELECT id, plate_no FROM vehicles WHERE active=1 ORDER BY id DESC"), conn)
         drs = pd.read_sql_query(sqltext("SELECT id, name FROM drivers WHERE active=1 ORDER BY id DESC"), conn)
-    del_sel = st.selectbox("Delivery", dels["id"].tolist() if not dels.empty else [0],
-                           format_func=lambda x: dels.set_index("id").loc[x,"do_no"] if not dels.empty else str(x))
-    v_sel = st.selectbox("Vehicle", vs["id"].tolist() if not vs.empty else [0],
-                         format_func=lambda x: vs.set_index("id").loc[x,"plate_no"] if not vs.empty else str(x))
-    d_sel = st.selectbox("Driver", drs["id"].tolist() if not drs.empty else [0],
-                         format_func=lambda x: drs.set_index("id").loc[x,"name"] if not drs.empty else str(x))
+
+    if dels.empty or vs.empty or drs.empty:
+        st.info("Create at least one delivery, vehicle, and driver to assign.")
+        return
+
+    del_sel = st.selectbox("Delivery", dels["id"].tolist(), format_func=lambda x: dels.set_index("id").loc[x,"do_no"])
+    v_sel = st.selectbox("Vehicle", vs["id"].tolist(), format_func=lambda x: vs.set_index("id").loc[x,"plate_no"])
+    d_sel = st.selectbox("Driver", drs["id"].tolist(), format_func=lambda x: drs.set_index("id").loc[x,"name"])
+
     if st.button("Assign"):
         with engine.begin() as conn:
             conn.execute(delivery_assignments.insert().values(delivery_id=int(del_sel), vehicle_id=int(v_sel), driver_id=int(d_sel)))
         st.success("Assigned")
 
-# 12) Documents (same behavior)
 def page_documents():
     st.header("Documents")
     UPLOAD_DIR = os.path.abspath("./uploads")
     os.makedirs(UPLOAD_DIR, exist_ok=True)
+
     def save_local(uploaded_file) -> str:
         path = os.path.join(UPLOAD_DIR, uploaded_file.name)
         with open(path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         return path
+
     entity_type = st.selectbox("Entity Type", ["REQ","RFQ","PO","GRN","INV","SUPPLIER","DELIVERY"])
     entity_id = st.number_input("Entity ID", min_value=1, step=1)
     file = st.file_uploader("Select file")
+
     if st.button("Upload") and file:
         path = save_local(file)
         with engine.begin() as conn:
-            conn.execute(documents.insert().values(entity_type=entity_type, entity_id=int(entity_id), filename=file.name, path=path))
+            conn.execute(documents.insert().values(entity_type=entity_type, entity_id=int(entity_id),
+                                                 filename=file.name, path=path))
         st.success(f"Uploaded to {path}")
+
     with engine.begin() as conn:
-        df = pd.read_sql_query(sqltext("SELECT id, entity_type, entity_id, filename, path, uploaded_at FROM documents ORDER BY id DESC LIMIT 200"), conn)
+        df = pd.read_sql_query(sqltext("""
+            SELECT id, entity_type, entity_id, filename, path, uploaded_at
+            FROM documents ORDER BY id DESC LIMIT 200
+        """), conn)
     st.subheader("Recent Documents")
     st.dataframe(df, use_container_width=True)
 
-# 13) Reports & Analytics (includes Inventory Valuation)
 def page_reports():
     st.header("Reports & Analytics")
-    # Spend by supplier
+
     st.subheader("Spend by Supplier")
     with engine.begin() as conn:
         spend = pd.read_sql_query(sqltext("""
@@ -971,25 +1026,36 @@ def page_reports():
         st.bar_chart(spend.set_index("supplier"))
     st.dataframe(spend, use_container_width=True)
 
-    # Lead-time Req -> GRN
     st.subheader("Lead-time: Requisition to Goods Receipt")
-    with engine.begin() as conn:
-        lead = pd.read_sql_query(sqltext("""
+    if USING_MYSQL:
+        lead_sql = """
             SELECT r.req_no, po.po_no, gr.grn_no, DATEDIFF(gr.received_at, r.created_at) AS days
             FROM requisitions r
             JOIN rfqs rf ON rf.requisition_id=r.id
             JOIN purchase_orders po ON po.rfq_id=rf.id
             JOIN goods_receipts gr ON gr.po_id=po.id
             ORDER BY r.id DESC LIMIT 300
-        """), conn)
+        """
+    else:
+        # SQLite uses julianday for date math
+        lead_sql = """
+            SELECT r.req_no, po.po_no, gr.grn_no,
+                   CAST((julianday(gr.received_at) - julianday(date(r.created_at))) AS INTEGER) AS days
+            FROM requisitions r
+            JOIN rfqs rf ON rf.requisition_id=r.id
+            JOIN purchase_orders po ON po.rfq_id=rf.id
+            JOIN goods_receipts gr ON gr.po_id=po.id
+            ORDER BY r.id DESC LIMIT 300
+        """
+    with engine.begin() as conn:
+        lead = pd.read_sql_query(sqltext(lead_sql), conn)
     st.dataframe(lead, use_container_width=True)
 
-    # OTIF (On-Time In-Full)
     st.subheader("OTIF (On-Time In-Full)")
     with engine.begin() as conn:
         otif = pd.read_sql_query(sqltext("""
             SELECT r.req_no, r.needed_by, gr.received_at,
-                   CASE WHEN gr.received_at <= r.needed_by THEN 1 ELSE 0 END AS on_time,
+                   CASE WHEN gr.received_at IS NOT NULL AND r.needed_by IS NOT NULL AND gr.received_at <= r.needed_by THEN 1 ELSE 0 END AS on_time,
                    (SELECT COALESCE(SUM(qty),0) FROM po_items pi WHERE pi.po_id=po.id) AS ordered_qty,
                    (SELECT COALESCE(SUM(ii.qty),0) FROM invoices inv
                     JOIN invoice_items ii ON ii.invoice_id=inv.id
@@ -1000,15 +1066,16 @@ def page_reports():
             LEFT JOIN goods_receipts gr ON gr.po_id=po.id
             ORDER BY r.id DESC LIMIT 300
         """), conn)
+
     if not otif.empty:
         otif["in_full"] = (otif["invoiced_qty"] >= otif["ordered_qty"]).astype(int)
-        otif["otif"] = (otif["on_time"] & otif["in_full"]).astype(int)
+        otif["otif"] = (otif["on_time"].astype(int) & otif["in_full"].astype(int)).astype(int)
         st.metric("OTIF % (sample)", f"{(otif['otif'].mean() * 100):.1f}%")
-        st.dataframe(otif[["req_no","needed_by","received_at","on_time","ordered_qty","invoiced_qty","in_full","otif"]], use_container_width=True)
+        st.dataframe(otif[["req_no","needed_by","received_at","on_time","ordered_qty","invoiced_qty","in_full","otif"]],
+                     use_container_width=True)
     else:
         st.info("No data for OTIF yet.")
 
-    # ✅ Inventory Valuation (Qty × last_price)
     st.subheader("Inventory Valuation")
     with engine.begin() as conn:
         val = pd.read_sql_query(sqltext("""
@@ -1035,6 +1102,7 @@ def page_admin_users():
         role = st.selectbox("Role", ["requester","approver","buyer","inspector","finance","admin"])
         dept = st.text_input("Department", value="Ops")
         submitted = st.form_submit_button("Create User")
+
     if submitted:
         try:
             with engine.begin() as conn:
@@ -1044,6 +1112,7 @@ def page_admin_users():
             st.success("User created")
         except IntegrityError:
             st.error("Email already exists")
+
     with engine.begin() as conn:
         df = pd.read_sql_query(sqltext("SELECT id, name, email, role, dept, created_at FROM users ORDER BY id DESC LIMIT 200"), conn)
     st.dataframe(df, use_container_width=True)
@@ -1051,24 +1120,39 @@ def page_admin_users():
 # ---------------------------
 # ROUTER
 # ---------------------------
-if choice.startswith("1)"): page_requisitions()
-elif choice.startswith("2)"): page_approvals()
-elif choice.startswith("3)"): page_rfqs_bids()
-elif choice.startswith("4)"): page_pos()
-elif choice.startswith("5)"): page_grn_insp()
-elif choice.startswith("6)"): page_invoices()
-elif choice.startswith("7)"): page_suppliers()
-elif choice.startswith("8)"): page_warehouses()
-elif choice.startswith("9)"): page_inventory()
-elif choice.startswith("10)"): page_deliveries()
-elif choice.startswith("11)"): page_fleet()
-elif choice.startswith("12)"): page_documents()
-elif choice.startswith("13)"): page_reports()
-elif choice.startswith("Admin"): page_admin_users()
+if choice.startswith("1)"):
+    page_requisitions()
+elif choice.startswith("2)"):
+    page_approvals()
+elif choice.startswith("3)"):
+    page_rfqs_bids()
+elif choice.startswith("4)"):
+    page_pos()
+elif choice.startswith("5)"):
+    page_grn_insp()
+elif choice.startswith("6)"):
+    page_invoices()
+elif choice.startswith("7)"):
+    page_suppliers()
+elif choice.startswith("8)"):
+    page_warehouses()
+elif choice.startswith("9)"):
+    page_inventory()
+elif choice.startswith("10)"):
+    page_deliveries()
+elif choice.startswith("11)"):
+    page_fleet()
+elif choice.startswith("12)"):
+    page_documents()
+elif choice.startswith("13)"):
+    page_reports()
+elif choice.startswith("Admin"):
+    page_admin_users()
 
 st.caption("""
-✔️ Uses your existing DB and sidebar UI.
+✔️ Uses SQLite automatically when DB_HOST is not configured (Streamlit Cloud demo mode).
 ✔️ Auto-updates inventory on GRN; deducts on shipments.
 ✔️ Includes inventory valuation report.
 Next steps: barcode/QR scanning, wave picking, route optimization, mobile-friendly pages, and approval links via email tokens.
 """)
+
