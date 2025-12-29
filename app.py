@@ -15,8 +15,14 @@ from sqlalchemy.exc import IntegrityError
 
 # ---------------------------
 # CONFIG / DB CONNECTION
-# ---------------------------
+
 st.set_page_config(page_title="WMS + Procurement", layout="wide")
+
+# Page title
+
+st.title("Warehouse Management + Procurement System")
+st.caption("WMS • Procurement • Inventory • Deliveries • Analytics")
+st.divider()
 
 DB_HOST = st.secrets.get("DB_HOST", os.getenv("DB_HOST", "")).strip()
 
