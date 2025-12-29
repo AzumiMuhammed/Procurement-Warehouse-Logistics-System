@@ -31,7 +31,7 @@ Full audit trail of procurement actions
 
 
 
-Warehouse Management
+Warehouse Management:
 
 Multi-warehouse support
 
@@ -46,7 +46,7 @@ Inter-warehouse stock transfers
 
 
 
-Inbound & Outbound Logistics
+Inbound & Outbound Logistics:
 
 Goods receipt notes (GRN)
 
@@ -86,7 +86,7 @@ KPI-ready datasets for operational insights
 
 
 
-Role-Based Access Control
+Role-Based Access Control:
 
 The system simulates real enterprise roles:
 
@@ -108,7 +108,7 @@ The Demo login uses an Admin role to allow full system exploration.
 
 
 
-Technical Architecture
+Technical Architecture:
 Backend & Data Layer
 
 Python
@@ -141,6 +141,7 @@ Clean separation of concerns (auth, inventory, procurement, finance)
 
 
 
+Database Strategy:
 
 Environment  ->  Database                      
 
@@ -150,7 +151,7 @@ Production   -> MySQL (via Streamlit Secrets)
 
 
 
-Authentication Model
+Authentication Model:
 
 One-click Demo login (no email/password)
 
@@ -162,7 +163,7 @@ Role enforcement across all modules
 
 
 
-Deployment
+Deployment:
 
 This app is designed for Streamlit Cloud deployment.
 
@@ -174,7 +175,7 @@ Safe handling of credentials (no secrets in GitHub)
 
 
 
-Why This Project Matters
+Why This Project Matters:
 
 This project demonstrates:
 
@@ -188,13 +189,12 @@ Ability to design recruiter-friendly demos
 
 Clean, maintainable Python architecture
 
+Inventory deduction on shipment
 
 
 
-Author
 
-Azumi Muhammed
+Author: Azumi Muhammed
 Data Scientist | AI Engineer
 
-Inventory deduction on shipment
 
