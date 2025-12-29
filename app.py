@@ -1175,10 +1175,3 @@ elif choice.startswith("13)"):
     page_reports()
 elif choice.startswith("Admin"):
     page_admin_users()
-
-st.caption("""
-✔️ Uses SQLite automatically when DB_HOST is not configured (Streamlit Cloud demo mode).
-✔️ Demo user is available via sidebar login (recruiters can assess the app).
-✔️ Auto-updates inventory on GRN; deducts on shipments.
-✔️ Includes inventory valuation report.
-""")
