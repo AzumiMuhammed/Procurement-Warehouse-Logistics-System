@@ -1,13 +1,13 @@
-Warehouse Management & Procurement System (WMS + Procurement)
+# Warehouse Management & Procurement System (WMS + Procurement)
 
 A full-cycle Warehouse Management and Procurement System built with Streamlit, SQLAlchemy, and Python, designed to demonstrate real-world logistics, purchasing, inventory, and financial workflows in a single integrated application.
 
 This project reflects how modern WMS and procurement platforms support end-to-end supply chain operations, from purchase requisitions to goods receipt, inventory valuation, and outbound deliveries.
 
 
-Live Demo Access (User-Friendly)
+## Live Demo Access (User-Friendly)
 
-This application includes one-click demo access — no credentials required.
+This application includes one-click demo access — no credentials required
 
 Open the app
 
@@ -18,7 +18,8 @@ You are logged in as a Demo Admin user
 This allows reviewers to explore all features without setup or configuration.
 
 
-Key Business Capabilities
+## Key Business Capabilities:
+
 Procurement & Purchasing
 
 Purchase requisitions with approval workflow
@@ -29,9 +30,7 @@ Purchase order generation from winning bids
 
 Full audit trail of procurement actions
 
-
-
-Warehouse Management:
+## Warehouse Management:
 
 Multi-warehouse support
 
@@ -44,9 +43,7 @@ Automatic inventory updates on goods receipt (IN) and deliveries (OUT)
 Inter-warehouse stock transfers
 
 
-
-
-Inbound & Outbound Logistics:
+## Inbound & Outbound Logistics:
 
 Goods receipt notes (GRN)
 
@@ -57,8 +54,7 @@ Outbound delivery orders
 Vehicle and driver assignment
 
 
-
-Finance & Compliance:
+## Finance & Compliance:
 
 Invoice capture with line-level detail
 
@@ -69,9 +65,7 @@ Payment tracking
 Supplier performance scoring
 
 
-
-
-Reporting & Analytics:
+## Reporting & Analytics:
 
 Inventory valuation
 
@@ -84,9 +78,7 @@ OTIF (On-Time In-Full) metrics
 KPI-ready datasets for operational insights
 
 
-
-
-Role-Based Access Control:
+## Role-Based Access Control:
 
 The system simulates real enterprise roles:
 
@@ -106,9 +98,8 @@ Menu visibility and actions are dynamically controlled based on the logged-in ro
 The Demo login uses an Admin role to allow full system exploration.
 
 
+## Technical Architecture:
 
-
-Technical Architecture:
 Backend & Data Layer
 
 Python
@@ -140,8 +131,7 @@ JSON audit logging (MySQL compatible)
 Clean separation of concerns (auth, inventory, procurement, finance)
 
 
-
-Database Strategy:
+## Database Strategy:
 
 Environment  ->  Database                      
 
@@ -150,8 +140,7 @@ Demo / Local ->  SQLite (automatic)
 Production   -> MySQL (via Streamlit Secrets) 
 
 
-
-Authentication Model:
+## Authentication Model:
 
 One-click Demo login (no email/password)
 
@@ -162,8 +151,7 @@ Session-based authentication
 Role enforcement across all modules
 
 
-
-Deployment:
+## Deployment:
 
 This app is designed for Streamlit Cloud deployment.
 
@@ -174,10 +162,7 @@ Optional MySQL support via Streamlit Secrets
 Safe handling of credentials (no secrets in GitHub)
 
 
-
-Why This Project Matters:
-
-This project demonstrates:
+## This project demonstrates:
 
 Practical understanding of WMS & procurement workflows
 
@@ -192,9 +177,9 @@ Clean, maintainable Python architecture
 Inventory deduction on shipment
 
 
+## Author:
+Azumi Muhammed
 
-
-Author: Azumi Muhammed
-Data Scientist | AI Engineer
+Data Scientist | Applied AI & LLM Engineer
 
 
