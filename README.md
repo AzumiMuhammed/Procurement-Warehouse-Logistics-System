@@ -1,5 +1,7 @@
 # Warehouse Management & Procurement System (WMS + Procurement)
 
+https://warehouse-management-procurement-system-ecj5ke4zyfvjkhnt9dpuwt.streamlit.app/
+
 A full-cycle Warehouse Management and Procurement System built with Streamlit, SQLAlchemy, and Python, designed to demonstrate real-world logistics, purchasing, inventory, and financial workflows in a single integrated application.
 
 This project reflects how modern WMS and procurement platforms support end-to-end supply chain operations, from purchase requisitions to goods receipt, inventory valuation, and outbound deliveries.
